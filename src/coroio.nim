@@ -6,45 +6,49 @@ import strutils
 export selectors, greenlet
 
 type
+  Coroutine = ref object
+    greenlet: ptr Greenlet
+    running: bool
+
   CoScheluder = object
-    selector: Selector[ptr Greenlet]
-    coroutines: seq[ptr Greenlet]
+    selector: Selector[Coroutine]
+    coroutines: seq[Coroutine]
     run: bool
 
   CoFuture*[T] = object
     value: T
     hasValue: bool
-    parent: ptr Greenlet
+    parent: Coroutine
 
 var sched: CoScheluder
+var currentCoroutine: Coroutine
+var rootCoroutine: Coroutine
 
-proc mswitchTo*(green: ptr Greenlet) =
+proc mswitchTo*(coro: Coroutine, arg: pointer): pointer =
   var frame = getFrameState()
-  green.switchTo()
+  currentCoroutine = coro
+  result = coro.greenlet.switchTo(arg)
   setFrameState(frame)
 
-proc mswitchTo*(green: ptr Greenlet, arg: pointer): pointer =
-  var frame = getFrameState()
-  result = green.switchTo(arg)
-  setFrameState(frame)
-
+proc mswitchTo*(coro: Coroutine) =
+  discard coro.mswitchTo(nil)
 
 proc coroSleep*(timeout: int) =
-  sched.selector.registerTimer(timeout, true, currentGreenlet())
-  rootGreenlet().mswitchTo()
+  sched.selector.registerTimer(timeout, true, currentCoroutine)
+  rootCoroutine.mswitchTo()
 
 proc coroRegister*(fd: int | SocketHandle; events: set[Event]) =
-  sched.selector.registerHandle(fd, events, currentGreenlet())
+  sched.selector.registerHandle(fd, events, currentCoroutine)
 
 proc coroUnregister*(fd: int | SocketHandle) =
   sched.selector.unregister(fd)
 
 proc coroYield*() =
-  rootGreenlet().mswitchTo()
+  rootCoroutine.mswitchTo()
 
 proc init*[T](co: var CoFuture[T]) =
   co.hasValue = false
-  co.parent = currentGreenlet()
+  co.parent = currentCoroutine
   sched.selector.registerTimer(1, true, co.parent) #TODO a real scheduler would be a lot better
 
 proc setValue*[T](co: ptr CoFuture[T], val: T) =
@@ -57,15 +61,16 @@ proc waitValue*[T](co: var CoFuture[T]): T =
     coroYield()
   result = co.value
 
-proc newCoro*[T](parm: T, start_func: proc (arg: T)): ptr Greenlet =
+proc newCoro*[T](parm: T, start_func: proc (arg: T)): Coroutine =
   var tup = (start_func, parm)
-  result = newGreenlet(proc (arg: pointer): pointer =
+  result = Coroutine()
+  result.greenlet = newGreenlet(proc (arg: pointer): pointer =
     var t: ptr tuple[pro: proc (arg: T), arg: T] = cast[ptr tuple[pro: proc (arg: T), arg: T]](arg)
     t[0](t[1])
+    sched.coroutines.del(sched.coroutines.find(currentCoroutine))
     return nil
   )
   sched.coroutines.add(result)
-  #TODO empty coroutines
   discard result.mswitchTo(addr tup)
 
 template launchCoro*(a, b: untyped): untyped =
@@ -78,7 +83,10 @@ template futureCoro*(future, args, body: untyped): untyped =
   launchCoro((addr future, args), body)
 
 proc initCoroio*() =
-  sched.selector = newSelector[ptr Greenlet]()
+  sched.selector = newSelector[Coroutine]()
+  rootCoroutine = Coroutine()
+  rootCoroutine.greenlet = rootGreenlet()
+  currentCoroutine = rootCoroutine
 
 proc coroioServe*() =
   var keys: array[64, ReadyKey]
