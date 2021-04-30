@@ -25,16 +25,21 @@ test "parallel coro":
     var firstFuture: CoFuture[string]
     futureCoro(firstFuture, (1000)) do:
       coroSleep(arg[1])
-      arg[0].setValue("OK")
+      arg[0].setValue("OK 1")
     var secondFuture: CoFuture[string]
     futureCoro(secondFuture, (1000)) do:
       coroSleep(arg[1])
-      arg[0].setValue("OK")
+      arg[0].setValue("OK 2")
 
-    check firstFuture.waitValue() == "OK"
-    check secondFuture.waitValue() == "OK"
+    check firstFuture.waitValue() == "OK 1"
+    check secondFuture.waitValue() == "OK 2"
     coroioStop()
 
   coroioServe()
   check (now() - start).inMilliseconds() > 900
   check (now() - start).inMilliseconds() < 1800
+
+import coroio/corohttp
+#TODO tests
+import coroio/coropg
+#TODO tests

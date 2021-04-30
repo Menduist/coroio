@@ -1,19 +1,21 @@
-import net, selectors, greenlet, nativesockets
+import net, selectors, coroio/greenlet, nativesockets
 import uri
 import httpcore
 import strutils
 
-export selectors, greenlet
+export selectors
 
 type
   Coroutine = ref object
     greenlet: ptr Greenlet
     running: bool
+    id: int
 
   CoScheluder = object
     selector: Selector[Coroutine]
     coroutines: seq[Coroutine]
     run: bool
+    totalId: int
 
   CoFuture*[T] = object
     value: T
@@ -27,15 +29,12 @@ var rootCoroutine: Coroutine
 proc mswitchTo*(coro: Coroutine, arg: pointer): pointer =
   var frame = getFrameState()
   currentCoroutine = coro
+  coro.running = true
   result = coro.greenlet.switchTo(arg)
   setFrameState(frame)
 
 proc mswitchTo*(coro: Coroutine) =
   discard coro.mswitchTo(nil)
-
-proc coroSleep*(timeout: int) =
-  sched.selector.registerTimer(timeout, true, currentCoroutine)
-  rootCoroutine.mswitchTo()
 
 proc coroRegister*(fd: int | SocketHandle; events: set[Event]) =
   sched.selector.registerHandle(fd, events, currentCoroutine)
@@ -43,18 +42,22 @@ proc coroRegister*(fd: int | SocketHandle; events: set[Event]) =
 proc coroUnregister*(fd: int | SocketHandle) =
   sched.selector.unregister(fd)
 
-proc coroYield*() =
+proc coroYield*(stopRunning = true) =
+  currentCoroutine.running = not stopRunning
   rootCoroutine.mswitchTo()
+
+proc coroSleep*(timeout: int) =
+  sched.selector.registerTimer(timeout, true, currentCoroutine)
+  coroYield()
 
 proc init*[T](co: var CoFuture[T]) =
   co.hasValue = false
   co.parent = currentCoroutine
-  sched.selector.registerTimer(1, true, co.parent) #TODO a real scheduler would be a lot better
 
 proc setValue*[T](co: ptr CoFuture[T], val: T) =
   co.value = val
   co.hasValue = true
-  sched.selector.registerTimer(1, true, co.parent) #TODO a real scheduler would be a lot better
+  co.parent.running = true
 
 proc waitValue*[T](co: var CoFuture[T]): T =
   while not co.hasValue:
@@ -71,6 +74,8 @@ proc newCoro*[T](parm: T, start_func: proc (arg: T)): Coroutine =
     return nil
   )
   sched.coroutines.add(result)
+  inc(sched.totalId)
+  result.id = sched.totalId
   discard result.mswitchTo(addr tup)
 
 template launchCoro*(a, b: untyped): untyped =
@@ -90,11 +95,20 @@ proc initCoroio*() =
 
 proc coroioServe*() =
   var keys: array[64, ReadyKey]
+  var hasRunning: bool = false
   sched.run = true
   while sched.run:
-    var eventCount = sched.selector.selectInto(-1, keys)
+    var eventCount = sched.selector.selectInto(if hasRunning: 0 else: 5, keys)
     for i in 0..<eventCount:
-      sched.selector.getData(keys[i].fd).mswitchTo()
+      sched.selector.getData(keys[i].fd).running = true
+    hasRunning = false
+    var i = 0
+    while i < sched.coroutines.len():
+      if sched.coroutines[i].running:
+        sched.coroutines[i].mswitchTo()
+      inc(i)
+    for coro in sched.coroutines:
+      if coro.running: hasRunning = true
   echo "Finished loop"
 
 proc coroioStop*() =
