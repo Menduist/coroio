@@ -7,6 +7,8 @@
 
 import unittest
 import times
+import osproc
+import streams
 
 import coroio
 test "simple coro":
@@ -40,6 +42,23 @@ test "parallel coro":
   check (now() - start).inMilliseconds() < 1800
 
 import coroio/corohttp
-#TODO tests
+
+test "http server basic":
+  initCoroio()
+  let serv = newCoroHttpServer()
+  serv.listen(proc (req: Request) =
+    check req.url.path == "/path"
+    req.respond(Http404, "Test reply")
+  , Port(8080))
+  var responseFuture: CoFuture[string]
+  futureCoro(responseFuture, "") do:
+    coroSleep(100)
+    let curl = startProcess("/usr/bin/curl", args = ["--limit-rate", "1", "-s", "http://127.0.0.1:8080/path"])
+    coroSleep(500)
+    arg[0].setValue(curl.outputStream().readAll())
+    coroioStop()
+  coroioServe()
+  check responseFuture.waitValue() == "Test reply"
+
 import coroio/coropg
 #TODO tests

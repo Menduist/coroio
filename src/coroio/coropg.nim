@@ -27,6 +27,7 @@ proc newCoropgPool*(
   for i in 0..<num:
     let conn = open(connection, user, password, database)
     assert conn.status == CONNECTION_OK
+    discard conn.pqsetnonblocking(1)
     result.conns.add(conn)
   globAsyncPool = result
 

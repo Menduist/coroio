@@ -6,11 +6,11 @@ import coroio
 import net, httpcore
 import nativesockets
 
-export tables, coroio, httpcore
+export tables, coroio, httpcore, net
 
 type
   Request* = ref object
-    client*: Socket
+    client*: CoroSocket
     reqMethod*: HttpMethod
     headers*: HttpHeaders
     url*: Uri
@@ -18,7 +18,7 @@ type
     hostname*: string
 
   CoroHttpServer* = ref object
-    socket: Socket
+    socket: CoroSocket
     handler: CoroHTTPHandler
 
   CoroHTTPHandler* = proc(request: Request)
@@ -27,22 +27,21 @@ proc newCoroHttpServer*(): CoroHttpServer =
   result = CoroHttpServer()
 
 proc parseRequest*(req: var Request) =
-  req.client.getFd().setBlocking(true) #TODO change that
-  coroRegister(req.client.getFd(), {Read})
-  coroYield()
+  req.client.getFd().setBlocking(false)
+  #coroRegister(req.client.getFd(), {Read})
+  #coroYield()
 
   let firstLine = req.client.recvLine().split(' ')
   parseUri(firstLine[1], req.url)
 
+  req.headers = newHttpHeaders()
   while true:
     let line = req.client.recvLine()
 
-    req.headers = newHttpHeaders()
-    if line == "\c\L": break
+    if line.len() == 0: break
     let (key, value) = parseHeader(line)
     req.headers[key] = value
 
-  coroUnregister(req.client.getFd())
   echo req.url
 
 proc respond*(req: Request, code: HttpCode, content: string,
@@ -66,7 +65,7 @@ proc respond*(req: Request, code: HttpCode, content: string,
   msg.add(content)
   req.client.send(msg)
 
-proc handleRequest(server: CoroHttpServer, client: Socket) =
+proc handleRequest(server: CoroHttpServer, client: CoroSocket) =
   var req: Request = new(Request)
   req.client = client
   req.url = initUri()
@@ -75,19 +74,19 @@ proc handleRequest(server: CoroHttpServer, client: Socket) =
   req.client.close()
 
 proc startServing(server: CoroHttpServer) =
-  var client: Socket
+  var client: CoroSocket
   coroRegister(server.socket.getFd(), {Read})
 
   while true:
     coroYield()
-    var sock: Socket
+    var sock: CoroSocket
     server.socket.accept(sock)
     launchCoro((server, sock)) do:
       handleRequest(arg[0], arg[1])
 
 proc listen*(server: CoroHttpServer, handler: CoroHTTPHandler, port: Port) =
-  server.socket = newSocket()
-  server.socket.getFd().setBlocking(false)
+  server.socket = newCoroSocket()
+  server.socket.setSockOpt(OptReuseAddr, true)
   server.socket.bindAddr(port)
   server.handler = handler
   server.socket.listen()
