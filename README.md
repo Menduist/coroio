@@ -10,6 +10,7 @@ Currently supports sockets, http server, postgres pool & futures
 - [X] Simple socket implementation
 - [X] Simple scheduler
 - [X] Pooled postgres
+- [ ] File reading/writing interface
 - [ ] Complete http server
 - [ ] Multithreading
 - [ ] Multithreaded scheduler
