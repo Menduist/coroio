@@ -38,12 +38,12 @@ proc mswitchTo*(coro: Coroutine, arg: pointer): pointer =
   if currentCoroutine != rootCoroutine and (timeEnd - currentCoroutine.timeStart).inMilliseconds() > 5:
     echo "Long running coroutine! (", (timeEnd - currentCoroutine.timeStart).inMilliseconds(), " ms)"
     echo getStackTrace()
-  var frame = getFrameState()
   currentCoroutine = coro
   coro.running = true
+  var frame = getFrameState()
   result = coro.greenlet.switchTo(arg)
-  currentCoroutine.timeStart = now()
   setFrameState(frame)
+  currentCoroutine.timeStart = now()
 
 proc mswitchTo*(coro: Coroutine) =
   discard coro.mswitchTo(nil)
@@ -65,8 +65,6 @@ proc coroSleep*(timeout: int) =
     coroYield()
 
 proc getFd*(socket: CoroSocket): SocketHandle {.borrow.}
-
-proc send*(socket: CoroSocket, data: pointer, size: int): int {.tags: [WriteIOEffect], borrow.}
 
 proc close*(socket: CoroSocket; flags = {SafeDisconn}) {.borrow.}
 
@@ -93,8 +91,29 @@ proc accept*(server: CoroSocket, client: var owned(CoroSocket),
   ((Socket)server).accept(tmpSocket, flags, inheritable)
   client = tmpSocket.toCoroSocket()
 
+proc send*(socket: CoroSocket, data: pointer, size: int): int {.tags: [WriteIOEffect], borrow.}
+
 proc send*(socket: CoroSocket, data: string,
-           flags = {SocketFlag.SafeDisconn}) {.tags: [WriteIOEffect], borrow.}
+           flags = {SocketFlag.SafeDisconn}) {.tags: [WriteIOEffect, TimeEffect].} =
+  var sent = 0
+  var cvers = cstring(data)
+  while sent < data.len():
+    let sentThisTime = socket.send(addr cvers[sent], data.len() - sent)
+    if sentThisTime < 0:
+      let lastError = osLastError()
+      if lastError.int32 != EINTR and lastError.int32 != EWOULDBLOCK and
+        lastError.int32 != EAGAIN:
+        if flags.isDisconnectionError(lastError):
+          return
+        else:
+          raise newException(OSError, osErrorMsg(lastError))
+    else:
+      sent += sentThisTime
+    if sent < data.len():
+      coroRegister(((Socket)socket).fd, {Write})
+      coroYield()
+      coroUnregister(((Socket)socket).fd)
+
 
 proc newCoroSocket*(): CoroSocket =
   result = CoroSocket(newSocket())
@@ -200,6 +219,10 @@ proc newCoro*[T](parm: T, start_func: proc (arg: T)): Coroutine =
   result = Coroutine()
   result.greenlet = newGreenlet(proc (arg: pointer): pointer =
     var t: ptr tuple[pro: proc (arg: T), arg: T, coro: Coroutine] = cast[ptr tuple[pro: proc (arg: T), arg: T, coro: Coroutine]](arg)
+    var frame = getFrameState()
+    frame.framePtr.prev = nil
+    frame.framePtr.calldepth = 0
+    setFrameState(frame)
     currentCoroutine = t[2]
     currentCoroutine.timeStart = now()
     t[0](t[1])
