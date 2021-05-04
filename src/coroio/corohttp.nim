@@ -5,6 +5,7 @@ import times
 import coroio
 import net, httpcore
 import nativesockets
+import parseutils
 
 export tables, coroio, httpcore, net
 
@@ -25,24 +26,6 @@ type
 
 proc newCoroHttpServer*(): CoroHttpServer =
   result = CoroHttpServer()
-
-proc parseRequest*(req: var Request) =
-  req.client.getFd().setBlocking(false)
-  #coroRegister(req.client.getFd(), {Read})
-  #coroYield()
-
-  let firstLine = req.client.recvLine().split(' ')
-  parseUri(firstLine[1], req.url)
-
-  req.headers = newHttpHeaders()
-  while true:
-    let line = req.client.recvLine()
-
-    if line.len() == 0: break
-    let (key, value) = parseHeader(line)
-    req.headers[key] = value
-
-  echo req.url
 
 proc respond*(req: Request, code: HttpCode, content: string,
               headers: HttpHeaders = nil) =
@@ -65,12 +48,40 @@ proc respond*(req: Request, code: HttpCode, content: string,
   msg.add(content)
   req.client.send(msg)
 
+proc parseRequest*(req: var Request): bool =
+  req.client.getFd().setBlocking(false)
+
+  let firstLine = req.client.recvLine().split(' ')
+  parseUri(firstLine[1], req.url)
+
+  req.headers = newHttpHeaders()
+  while true:
+    let line = req.client.recvLine()
+
+    if line.len() == 0: break
+    let (key, value) = parseHeader(line)
+    req.headers[key] = value
+
+  if req.headers.hasKey("Content-Length"):
+    var contentLength = 0
+    if parseSaturatedNatural(req.headers["Content-Length"], contentLength) == 0:
+      req.respond(Http400, "Bad Request. Invalid Content-Length.")
+      return false
+    else:
+      req.body = req.client.recv(contentLength)
+      if req.body.len != contentLength:
+        req.respond(Http400, "Bad Request. Content-Length does not match actual.")
+        return false
+
+  echo req.url
+  result = true
+
 proc handleRequest(server: CoroHttpServer, client: CoroSocket) =
   var req: Request = new(Request)
   req.client = client
   req.url = initUri()
-  parseRequest(req)
-  server.handler(req)
+  if parseRequest(req):
+    server.handler(req)
   req.client.close()
 
 proc startServing(server: CoroHttpServer) =

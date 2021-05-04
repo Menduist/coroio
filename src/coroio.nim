@@ -127,6 +127,30 @@ proc readIntoBuf(socket: CoroSocket, flags = {SocketFlag.SafeDisconn}): int =
   sock.currPos = 0
   sock.bufLen = result
 
+proc recvInto*(socket: CoroSocket, resString: var string, size: int, flags = {SocketFlag.SafeDisconn}) =
+  let sock = (Socket)socket
+  if sock.isBuffered:
+    var read = 0
+
+    while read < size:
+      if sock.currPos >= sock.bufLen:
+        let res = socket.readIntoBuf(flags)
+        if res == 0:
+          resString = ""
+          return
+      let chunk = min(sock.bufLen-sock.currPos, size-read)
+      copyMem(addr(resString[read]), addr(sock.buffer[sock.currPos]), chunk)
+      read.inc(chunk)
+      sock.currPos.inc(chunk)
+    resString.setLen(read)
+  else:
+    #TODO
+    discard
+
+proc recv*(socket: CoroSocket, size: int, flags = {SocketFlag.SafeDisconn}): string =
+  result = newString(size)
+  socket.recvInto(result, size, flags)
+
 proc recvLineInto*(socket: CoroSocket, resString: var string, flags = {SocketFlag.SafeDisconn}) =
   let sock = (Socket)socket
   if sock.isBuffered:

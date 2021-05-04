@@ -60,5 +60,21 @@ test "http server basic":
   coroioServe()
   check responseFuture.waitValue() == "Test reply"
 
+test "http server POST":
+  initCoroio()
+  let serv = newCoroHttpServer()
+  serv.listen(proc (req: Request) =
+    check req.url.path == "/path"
+    check req.body == "Test Body"
+    req.respond(Http200, "Test reply")
+  , Port(8081))
+  launchCoro("") do:
+    coroSleep(100)
+    let curl = startProcess("/usr/bin/curl", args = ["-X", "POST", "-s", "http://127.0.0.1:8081/path", "-d", "Test Body"])
+    coroSleep(500)
+    check curl.outputStream().readAll() == "Test reply"
+    coroioStop()
+  coroioServe()
+
 import coroio/coropg
 #TODO tests
